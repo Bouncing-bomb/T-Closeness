@@ -181,7 +181,19 @@ def compute_emd(partition):
     # Step 1: count SA values inside this partition
     # Step 2: for every value in GLOBAL_SA_DIST, compute |p_v - q_v|
     # Step 3: return 0.5 * sum of absolute differences
-    # your code here
+    if not partition.member:
+        return 0.0
+    sa_counts = {}
+    for record in partition.member:
+        sa_value = record[sa_index]
+        sa_counts[sa_value] = sa_counts.get(sa_value, 0) + 1
+    partition_size = float(len(partition))
+    # Include the full support; a value absent from the partition has probability 0.
+    sa_values = set(GLOBAL_SA_DIST) | set(sa_counts)
+    difference = sum(abs(sa_counts.get(sa_value, 0) / partition_size
+                         - GLOBAL_SA_DIST.get(sa_value, 0.0))
+                     for sa_value in sa_values)
+    return 0.5 * difference
 
 def satisfy_t_closeness(partition, t):
     if partition is None or not partition.member:
@@ -206,7 +218,38 @@ def anonymize_strict(partition):
         You only need to insert the t-closeness condition check right after the k-anonymity check in the code from Experiment 1.
         Hint: use satisfy_t_closeness(lhs, T_THRESHOLD) and satisfy_t_closeness(rhs, T_THRESHOLD) above.
         '''
-        # your code here
+        dim = choose_dimension(partition)
+        split_val, next_val, low_val, high_val = find_median(partition, dim)
+        # Tighten this dimension to the actual range of the parent partition.
+        partition.low[dim] = QI_DICT[dim][low_val]
+        partition.high[dim] = QI_DICT[dim][high_val]
+        if split_val == '' or split_val == next_val:
+            partition.allow[dim] = 0
+            continue
+
+        split_index = QI_DICT[dim][split_val]
+        lhs_members = []
+        rhs_members = []
+        for record in partition.member:
+            if QI_DICT[dim][record[dim]] <= split_index:
+                lhs_members.append(record)
+            else:
+                rhs_members.append(record)
+        # Strict cuts never distribute equal QI values across both children.
+        if len(lhs_members) < GL_K or len(rhs_members) < GL_K:
+            partition.allow[dim] = 0
+            continue
+
+        lhs_high = partition.high[:]
+        lhs_high[dim] = split_index
+        rhs_low = partition.low[:]
+        rhs_low[dim] = QI_DICT[dim][next_val]
+        lhs = Partition(lhs_members, partition.low, lhs_high)
+        rhs = Partition(rhs_members, rhs_low, partition.high)
+        if not (satisfy_t_closeness(lhs, T_THRESHOLD)
+                and satisfy_t_closeness(rhs, T_THRESHOLD)):
+            partition.allow[dim] = 0
+            continue
 
         anonymize_strict(lhs)
         anonymize_strict(rhs)
@@ -232,7 +275,47 @@ def anonymize_relaxed(partition):
     Follow the same retry pattern as the k-anonymity check above.)
     Hint: use satisfy_t_closeness(lhs, T_THRESHOLD) and satisfy_t_closeness(rhs, T_THRESHOLD).
     '''
-    # your code here   
+    dim = choose_dimension(partition)
+    split_val, next_val, low_val, high_val = find_median(partition, dim)
+    partition.low[dim] = QI_DICT[dim][low_val]
+    partition.high[dim] = QI_DICT[dim][high_val]
+    if split_val == '':
+        partition.allow[dim] = 0
+        anonymize_relaxed(partition)
+        return
+
+    split_index = QI_DICT[dim][split_val]
+    lhs_members = []
+    rhs_members = []
+    mid_members = []
+    for record in partition.member:
+        record_index = QI_DICT[dim][record[dim]]
+        if record_index < split_index:
+            lhs_members.append(record)
+        elif record_index > split_index:
+            rhs_members.append(record)
+        else:
+            mid_members.append(record)
+    # Divide median ties to balance record counts, preserving the input order.
+    left_needed = len(partition) // 2 - len(lhs_members)
+    lhs_members.extend(mid_members[:left_needed])
+    rhs_members.extend(mid_members[left_needed:])
+    if len(lhs_members) < GL_K or len(rhs_members) < GL_K:
+        partition.allow[dim] = 0
+        anonymize_relaxed(partition)
+        return
+
+    lhs_high = partition.high[:]
+    lhs_high[dim] = max(QI_DICT[dim][record[dim]] for record in lhs_members)
+    rhs_low = partition.low[:]
+    rhs_low[dim] = min(QI_DICT[dim][record[dim]] for record in rhs_members)
+    lhs = Partition(lhs_members, partition.low, lhs_high)
+    rhs = Partition(rhs_members, rhs_low, partition.high)
+    if not (satisfy_t_closeness(lhs, T_THRESHOLD)
+            and satisfy_t_closeness(rhs, T_THRESHOLD)):
+        partition.allow[dim] = 0
+        anonymize_relaxed(partition)
+        return
 
     anonymize_relaxed(lhs)
     anonymize_relaxed(rhs)
@@ -261,7 +344,13 @@ def init(data, k, QI_num=-1):
     Example: if 6 records have SA values [A, A, B, C, C, C],
              then GLOBAL_SA_DIST = {'A': 2/6, 'B': 1/6, 'C': 3/6}.
     '''
-    #your code here
+    sa_counts = {}
+    for record in data:
+        sa_value = record[-1]
+        sa_counts[sa_value] = sa_counts.get(sa_value, 0) + 1
+    data_size = float(len(data))
+    GLOBAL_SA_DIST = {sa_value: count / data_size
+                      for sa_value, count in sa_counts.items()}
 
     QI_ORDER = []
     QI_RANGE = []
